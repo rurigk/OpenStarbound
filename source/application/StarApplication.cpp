@@ -18,7 +18,7 @@ void Application::windowChanged(WindowMode, Vec2U) {}
 
 void Application::processInput(InputEvent const&) {}
 
-void Application::update() {}
+void Application::update(bool, double) {}
 
 unsigned Application::framesSkipped() const { return 0; }
 

@@ -6,6 +6,7 @@
 #include "StarTtlCache.hpp"
 #include "StarImage.hpp"
 #include "StarImageProcessing.hpp"
+#include "StarFrameRateMonitor.hpp"
 
 #include "SDL3/SDL.h"
 #include "StarPlatformServices_pc.hpp"
@@ -524,13 +525,18 @@ public:
       m_updateTicker.reset();
       m_renderTicker.reset();
 
+      // setVSyncEnabled(false);
+
       bool quit = false;
       while (true) {
+        bool fullUpdate = m_frameApproacher.startFrame();
         cleanup();
 
 
-        for (auto const& event : processEvents())
-          m_application->processInput(event);
+        if (fullUpdate) {
+          for (auto const& event : processEvents())
+            m_application->processInput(event);
+        }
 
         if (m_platformServices)
           m_platformServices->update();
@@ -544,16 +550,19 @@ public:
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
 
-        int updatesBehind = max<int>(round(m_updateTicker.ticksBehind()), 1);
-        updatesBehind = min<int>(updatesBehind, m_maxFrameSkip + 1);
-        for (int i = 0; i < updatesBehind; ++i) {
-          //since frame-skipping is a thing, we have to begin a new ImGui frame here to prevent duplicate elements made by updates
-          if (i != 0)
-            ImGui::EndFrame();
-          ImGui::NewFrame();
-          m_application->update();
-          m_updateRate = m_updateTicker.tick();
-        }
+        // int updatesBehind = max<int>(round(m_updateTicker.ticksBehind()), 1);
+        // updatesBehind = min<int>(updatesBehind, m_maxFrameSkip + 1);
+        // for (int i = 0; i < updatesBehind; ++i) {
+        //   //since frame-skipping is a thing, we have to begin a new ImGui frame here to prevent duplicate elements made by updates
+        //   if (i != 0)
+        //     ImGui::EndFrame();
+        //   ImGui::NewFrame();
+        //   m_application->update();
+        //   m_updateRate = m_updateTicker.tick();
+        // }
+
+        ImGui::NewFrame();
+        m_application->update(fullUpdate, m_frameApproacher.scaleRate());
 
         m_renderer->startFrame();
         m_application->render();
@@ -562,7 +571,7 @@ public:
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(m_sdlWindow);
-        m_renderRate = m_renderTicker.tick();
+        m_renderRate = m_frameApproacher.renderRate();
 
         if (m_quitRequested) {
           Logger::info("Application: quit requested");
@@ -579,9 +588,14 @@ public:
           break;
         }
 
-        int64_t spareMilliseconds = round(m_updateTicker.spareTime() * 1000);
+        double remainingTime = m_frameApproacher.endFrame();
+        int64_t spareMilliseconds = round(remainingTime * 1000);
+        // Logger::info("Spare ms {}", spareMilliseconds);
+        // int64_t spareMilliseconds = round(m_updateTicker.spareTime() * 1000);
         if (spareMilliseconds > 0)
+        {
           Thread::sleepPrecise(spareMilliseconds);
+        }
       }
     } catch (std::exception const& e) {
       Logger::error("Application: exception thrown!");
@@ -1084,6 +1098,8 @@ private:
   }
 
   SignalHandler m_signalHandler;
+
+  FrameRateApproacher m_frameApproacher = FrameRateApproacher(165.0f, 60.0f);
 
   TickRateApproacher m_updateTicker = TickRateApproacher(60.0f, 1.0f);
   float m_updateRate = 0.0f;

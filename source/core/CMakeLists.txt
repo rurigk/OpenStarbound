@@ -121,6 +121,7 @@ SET (star_core_HEADERS
     StarText.hpp
     StarThread.hpp
     StarTickRateMonitor.hpp
+    StarFrameRateMonitor.hpp
     StarTime.hpp
     StarTtlCache.hpp
     StarUdp.hpp
@@ -189,6 +190,7 @@ SET (star_core_SOURCES
     StarThread.cpp
     StarTime.cpp
     StarTickRateMonitor.cpp
+    StarFrameRateMonitor.cpp
     StarUdp.cpp
     StarUnicode.cpp
     StarUuid.cpp

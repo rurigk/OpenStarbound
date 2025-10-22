@@ -40,7 +40,7 @@ public:
   virtual void processInput(InputEvent const& event);
 
   // Will be called at updateRate hz, or as close as possible.
-  virtual void update();
+  virtual void update(bool, double);
   
   // Returns how many frames have been skipped.
   virtual unsigned framesSkipped() const;

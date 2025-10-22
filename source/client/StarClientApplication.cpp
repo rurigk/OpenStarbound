@@ -339,7 +339,7 @@ void ClientApplication::processInput(InputEvent const& event) {
   m_input->handleInput(event, processed);
 }
 
-void ClientApplication::update() {
+void ClientApplication::update(bool fullUpdate, double scaleRate) {
   float dt = GlobalTimestep * GlobalTimescale;
   auto& app = appController();
   if (m_state >= MainAppState::Title) {
@@ -369,9 +369,9 @@ void ClientApplication::update() {
   else if (m_state == MainAppState::Error)
     updateError(dt);
   else if (m_state == MainAppState::Title)
-    updateTitle(dt);
+    updateTitle(dt, fullUpdate);
   else if (m_state > MainAppState::Title)
-    updateRunning(dt);
+    updateRunning(dt, fullUpdate, scaleRate);
   
   // Swallow leftover encoded voice data if we aren't in-game to allow mic read to continue for settings.
   if (m_state <= MainAppState::Title) {
@@ -853,10 +853,10 @@ void ClientApplication::updateError(float) {
     changeState(MainAppState::Title);
 }
 
-void ClientApplication::updateTitle(float dt) {
+void ClientApplication::updateTitle(float dt, bool fullUpdate) {
   m_cinematicOverlay->update(dt);
 
-  m_titleScreen->update(dt);
+  m_titleScreen->update(dt, fullUpdate);
   m_mainMixer->update(dt);
   m_mainMixer->setSpeed(GlobalTimescale);
 
@@ -941,275 +941,280 @@ void ClientApplication::updateTitle(float dt) {
   }
 }
 
-void ClientApplication::updateRunning(float dt) {
+void ClientApplication::updateRunning(float dt, bool fullUpdate, double scaleRate) {
   try {
     auto& app = appController();
-    auto worldClient = m_universeClient->worldClient();
-    auto p2pNetworkingService = app->p2pNetworkingService();
-    bool clientIPJoinable = m_root->configuration()->get("clientIPJoinable").toBool();
-    bool clientP2PJoinable = m_root->configuration()->get("clientP2PJoinable").toBool();
-    Maybe<pair<uint16_t, uint16_t>> party = make_pair(m_universeClient->players(), m_universeClient->maxPlayers());
+    if (fullUpdate) {
+      auto worldClient = m_universeClient->worldClient();
+      auto p2pNetworkingService = app->p2pNetworkingService();
+      bool clientIPJoinable = m_root->configuration()->get("clientIPJoinable").toBool();
+      bool clientP2PJoinable = m_root->configuration()->get("clientP2PJoinable").toBool();
+      Maybe<pair<uint16_t, uint16_t>> party = make_pair(m_universeClient->players(), m_universeClient->maxPlayers());
 
-    if (m_state == MainAppState::MultiPlayer) {
-      if (p2pNetworkingService) {
-        p2pNetworkingService->setAcceptingP2PConnections(false);
-        if (clientP2PJoinable && m_currentRemoteJoin)
-          p2pNetworkingService->setJoinRemote(*m_currentRemoteJoin);
-        else
-          p2pNetworkingService->setJoinUnavailable();
-      }
-    } else {
-      m_universeServer->setListeningTcp(clientIPJoinable);
-      if (p2pNetworkingService) {
-        p2pNetworkingService->setAcceptingP2PConnections(clientP2PJoinable);
-        if (clientP2PJoinable) {
-          p2pNetworkingService->setJoinLocal(m_universeServer->maxClients());
-        } else {
-          p2pNetworkingService->setJoinUnavailable();
-          party = {};
+      if (m_state == MainAppState::MultiPlayer) {
+        if (p2pNetworkingService) {
+          p2pNetworkingService->setAcceptingP2PConnections(false);
+          if (clientP2PJoinable && m_currentRemoteJoin)
+            p2pNetworkingService->setJoinRemote(*m_currentRemoteJoin);
+          else
+            p2pNetworkingService->setJoinUnavailable();
         }
+      } else {
+        m_universeServer->setListeningTcp(clientIPJoinable);
+        if (p2pNetworkingService) {
+          p2pNetworkingService->setAcceptingP2PConnections(clientP2PJoinable);
+          if (clientP2PJoinable) {
+            p2pNetworkingService->setJoinLocal(m_universeServer->maxClients());
+          } else {
+            p2pNetworkingService->setJoinUnavailable();
+            party = {};
+          }
+        }
+      }
+      
+      if (p2pNetworkingService) {
+        auto getActivityDetail = [&](String const& tag) -> String {
+          if (tag == "playerName")
+            return Text::stripEscapeCodes(m_player->name());
+          if (tag == "playerHealth")
+            return toString(m_player->health());
+          if (tag == "playerMaxHealth")
+            return toString(m_player->maxHealth());
+          if (tag == "playerEnergy")
+            return toString(m_player->energy());
+          if (tag == "playerMaxEnergy")
+            return toString(m_player->maxEnergy());
+          if (tag == "playerBreath")
+            return toString(m_player->breath());
+          if (tag == "playerMaxBreath")
+            return toString(m_player->maxBreath());
+          if (tag == "playerXPos")
+            return toString(round(m_player->position().x()));
+          if (tag == "playerYPos")
+            return toString(round(m_player->position().y()));
+          if (tag == "worldName") {
+            if (m_universeClient->clientContext()->playerWorldId().is<ClientShipWorldId>())
+              return "Player Ship";
+            else if (WorldTemplate const* worldTemplate = worldClient ? worldClient->currentTemplate().get() : nullptr) {
+              auto worldName = worldTemplate->worldName();
+              if (worldName.empty())
+                return "In World";
+              else
+                return Text::stripEscapeCodes(worldName);
+            }
+            else
+              return "Nowhere";
+          }
+          return "";
+        };
+
+        String finalDetails = "";
+        Json activityDetails = m_root->configuration()->getPath("discord.activityDetails");
+        if (activityDetails.isType(Json::Type::Array)) {
+          StringList detailsList;
+          for (auto& detail : activityDetails.iterateArray())
+            detailsList.append(getActivityDetail(*detail.stringPtr()));
+          finalDetails = detailsList.join("\n");
+        } else if (activityDetails.isType(Json::Type::String))
+          finalDetails = activityDetails.toString().lookupTags(getActivityDetail);
+
+        p2pNetworkingService->setActivityData("In Game", finalDetails.utf8Ptr(), m_timeSinceJoin, party);
+      }
+
+      if (!m_mainInterface->inputFocus() && !m_cinematicOverlay->suppressInput()) {
+        m_player->setShifting(isActionTaken(InterfaceAction::PlayerShifting));
+
+        if (isActionTaken(InterfaceAction::PlayerRight))
+          m_player->moveRight();
+        if (isActionTaken(InterfaceAction::PlayerLeft))
+          m_player->moveLeft();
+        if (isActionTaken(InterfaceAction::PlayerUp))
+          m_player->moveUp();
+        if (isActionTaken(InterfaceAction::PlayerDown))
+          m_player->moveDown();
+        if (isActionTaken(InterfaceAction::PlayerJump))
+          m_player->jump();
+
+        if (isActionTaken(InterfaceAction::PlayerTechAction1))
+          m_player->special(1);
+        if (isActionTaken(InterfaceAction::PlayerTechAction2))
+          m_player->special(2);
+        if (isActionTaken(InterfaceAction::PlayerTechAction3))
+          m_player->special(3);
+
+        if (isActionTakenEdge(InterfaceAction::PlayerInteract))
+          m_player->beginTrigger();
+        else if (!isActionTaken(InterfaceAction::PlayerInteract))
+          m_player->endTrigger();
+
+        if (isActionTakenEdge(InterfaceAction::PlayerDropItem))
+          m_player->dropItem();
+
+        if (isActionTakenEdge(InterfaceAction::EmoteBlabbering))
+          m_player->addEmote(HumanoidEmote::Blabbering);
+        if (isActionTakenEdge(InterfaceAction::EmoteShouting))
+          m_player->addEmote(HumanoidEmote::Shouting);
+        if (isActionTakenEdge(InterfaceAction::EmoteHappy))
+          m_player->addEmote(HumanoidEmote::Happy);
+        if (isActionTakenEdge(InterfaceAction::EmoteSad))
+          m_player->addEmote(HumanoidEmote::Sad);
+        if (isActionTakenEdge(InterfaceAction::EmoteNeutral))
+          m_player->addEmote(HumanoidEmote::NEUTRAL);
+        if (isActionTakenEdge(InterfaceAction::EmoteLaugh))
+          m_player->addEmote(HumanoidEmote::Laugh);
+        if (isActionTakenEdge(InterfaceAction::EmoteAnnoyed))
+          m_player->addEmote(HumanoidEmote::Annoyed);
+        if (isActionTakenEdge(InterfaceAction::EmoteOh))
+          m_player->addEmote(HumanoidEmote::Oh);
+        if (isActionTakenEdge(InterfaceAction::EmoteOooh))
+          m_player->addEmote(HumanoidEmote::OOOH);
+        if (isActionTakenEdge(InterfaceAction::EmoteBlink))
+          m_player->addEmote(HumanoidEmote::Blink);
+        if (isActionTakenEdge(InterfaceAction::EmoteWink))
+          m_player->addEmote(HumanoidEmote::Wink);
+        if (isActionTakenEdge(InterfaceAction::EmoteEat))
+          m_player->addEmote(HumanoidEmote::Eat);
+        if (isActionTakenEdge(InterfaceAction::EmoteSleep))
+          m_player->addEmote(HumanoidEmote::Sleep);
+
+        if (int newZoomDirection = (int)m_input->bindHeld("opensb", "zoomIn") - (int)m_input->bindHeld("opensb", "zoomOut"))
+          m_cameraZoomDirection = newZoomDirection;
+      }
+      if (m_cameraZoomDirection != 0) {
+        const float threshold = 0.01f;
+        bool goingIn = m_cameraZoomDirection == 1;
+        auto config = m_root->configuration();
+        float curZoom = config->get("zoomLevel").toFloat(),
+              newZoom = max(1.f, curZoom * powf(1.f + (float)m_cameraZoomDirection * 0.5f, min(1.f, dt * 5.f))),
+              intZoom = max(1.f, (goingIn ? floor(curZoom) : ceil(curZoom)) + m_cameraZoomDirection);
+        bool pastInt = goingIn ? newZoom + threshold > intZoom
+                              : newZoom - threshold < intZoom;
+        if (pastInt) {
+          float intNewZoom = goingIn ? ceil(newZoom) : floor(newZoom);
+          newZoom = lerp(clamp(abs(intZoom - newZoom) - 1.f, 0.f, 1.f), intZoom, intNewZoom);
+          m_cameraZoomDirection = 0;
+        }
+        config->set("zoomLevel", min(1000000.f, newZoom));
+      }
+
+      if (m_controllerInput && m_controllerLeftStick.magnitudeSquared() > 0.01f)
+        m_player->setMoveVector(m_controllerLeftStick);
+      else
+        m_player->setMoveVector(Vec2F());
+
+      m_voice->setInput(m_input->bindHeld("opensb", "pushToTalk"));
+      DataStreamBuffer voiceData;
+      voiceData.setByteOrder(ByteOrder::LittleEndian);
+      //voiceData.writeBytes(VoiceBroadcastPrefix.utf8Bytes()); transmitting with SE compat for now
+      bool needstoSendVoice = m_voice->send(voiceData, 5000);
+
+      auto checkDisconnection = [this]() {
+        if (!m_universeClient->isConnected()) {
+          m_cinematicOverlay->stop();
+          String errMessage;
+          if (auto disconnectReason = m_universeClient->disconnectReason())
+            errMessage = strf("You were disconnected from the server for the following reason:\n{}", *disconnectReason);
+          else
+            errMessage = "Client-server connection no longer valid!";
+          setError(errMessage);
+          changeState(MainAppState::Title);
+          return true;
+        }
+
+        return false;
+      };
+
+      if (checkDisconnection())
+        return;
+
+      m_mainInterface->preUpdate(dt);
+      m_universeClient->update(dt);
+
+      if (checkDisconnection())
+        return;
+
+      if (worldClient) {
+        m_worldPainter->update(dt);
+        auto& broadcastCallback = worldClient->broadcastCallback();
+        if (!broadcastCallback) {
+          broadcastCallback = [&](PlayerPtr player, StringView broadcast) -> bool {
+            auto& view = broadcast.utf8();
+            if (view.rfind(VoiceBroadcastPrefix.utf8(), 0) != NPos) {
+              auto entityId = player->entityId();
+              auto speaker = m_voice->speaker(connectionForEntity(entityId));
+              speaker->entityId = entityId;
+              speaker->name = player->name();
+              speaker->position = player->mouthPosition();
+              m_voice->receive(speaker, view.substr(VoiceBroadcastPrefix.utf8Size()));
+            }
+            return true;
+          };
+        }
+
+        if (worldClient->inWorld()) {
+          if (needstoSendVoice) {
+            auto signature = Curve25519::sign(voiceData.ptr(), voiceData.size());
+            std::string_view signatureView((char*)signature.data(), signature.size());
+            std::string_view audioDataView(voiceData.ptr(), voiceData.size());
+            auto broadcast = strf("data\0voice\0{}{}"s, signatureView, audioDataView);
+            worldClient->sendSecretBroadcast(broadcast, true, false); // Already compressed by Opus.
+          }
+          if (auto mainPlayer = m_universeClient->mainPlayer()) {
+            auto localSpeaker = m_voice->localSpeaker();
+            localSpeaker->position = mainPlayer->position();
+            localSpeaker->entityId = mainPlayer->entityId();
+            localSpeaker->name = mainPlayer->name();
+          }
+          m_voice->setLocalSpeaker(worldClient->connection());
+        }
+        worldClient->setInteractiveHighlightMode(isActionTaken(InterfaceAction::ShowLabels));
       }
     }
     
-    if (p2pNetworkingService) {
-      auto getActivityDetail = [&](String const& tag) -> String {
-        if (tag == "playerName")
-          return Text::stripEscapeCodes(m_player->name());
-        if (tag == "playerHealth")
-          return toString(m_player->health());
-        if (tag == "playerMaxHealth")
-          return toString(m_player->maxHealth());
-        if (tag == "playerEnergy")
-          return toString(m_player->energy());
-        if (tag == "playerMaxEnergy")
-          return toString(m_player->maxEnergy());
-        if (tag == "playerBreath")
-          return toString(m_player->breath());
-        if (tag == "playerMaxBreath")
-          return toString(m_player->maxBreath());
-        if (tag == "playerXPos")
-          return toString(round(m_player->position().x()));
-        if (tag == "playerYPos")
-          return toString(round(m_player->position().y()));
-        if (tag == "worldName") {
-          if (m_universeClient->clientContext()->playerWorldId().is<ClientShipWorldId>())
-            return "Player Ship";
-          else if (WorldTemplate const* worldTemplate = worldClient ? worldClient->currentTemplate().get() : nullptr) {
-            auto worldName = worldTemplate->worldName();
-            if (worldName.empty())
-              return "In World";
-            else
-              return Text::stripEscapeCodes(worldName);
-          }
-          else
-            return "Nowhere";
+    updateCamera(dt, fullUpdate, scaleRate);
+
+    if (fullUpdate) {
+      m_cinematicOverlay->update(dt);
+      m_mainInterface->update(dt);
+      m_mainMixer->update(dt, m_cinematicOverlay->muteSfx(), m_cinematicOverlay->muteMusic());
+      m_mainMixer->setSpeed(GlobalTimescale);
+
+      bool inputActive = m_mainInterface->textInputActive();
+      m_input->setTextInputActive(inputActive);
+      if (inputActive)
+        app->setTextArea(m_mainInterface->paneManager()->keyboardCapturedWidget()->keyboardCaptureArea());
+      else
+        app->setTextArea();
+      app->setAcceptingTextInput(inputActive);
+
+      for (auto const& interactAction : m_player->pullInteractActions())
+        m_mainInterface->handleInteractAction(interactAction);
+
+      if (m_universeServer) {
+        if (auto p2pNetworkingService = app->p2pNetworkingService()) {
+          for (auto& p2pClient : p2pNetworkingService->acceptP2PConnections())
+            m_universeServer->addClient(UniverseConnection(P2PPacketSocket::open(std::move(p2pClient))));
         }
-        return "";
-      };
 
-      String finalDetails = "";
-      Json activityDetails = m_root->configuration()->getPath("discord.activityDetails");
-      if (activityDetails.isType(Json::Type::Array)) {
-        StringList detailsList;
-        for (auto& detail : activityDetails.iterateArray())
-          detailsList.append(getActivityDetail(*detail.stringPtr()));
-        finalDetails = detailsList.join("\n");
-      } else if (activityDetails.isType(Json::Type::String))
-        finalDetails = activityDetails.toString().lookupTags(getActivityDetail);
-
-      p2pNetworkingService->setActivityData("In Game", finalDetails.utf8Ptr(), m_timeSinceJoin, party);
-    }
-
-    if (!m_mainInterface->inputFocus() && !m_cinematicOverlay->suppressInput()) {
-      m_player->setShifting(isActionTaken(InterfaceAction::PlayerShifting));
-
-      if (isActionTaken(InterfaceAction::PlayerRight))
-        m_player->moveRight();
-      if (isActionTaken(InterfaceAction::PlayerLeft))
-        m_player->moveLeft();
-      if (isActionTaken(InterfaceAction::PlayerUp))
-        m_player->moveUp();
-      if (isActionTaken(InterfaceAction::PlayerDown))
-        m_player->moveDown();
-      if (isActionTaken(InterfaceAction::PlayerJump))
-        m_player->jump();
-
-      if (isActionTaken(InterfaceAction::PlayerTechAction1))
-        m_player->special(1);
-      if (isActionTaken(InterfaceAction::PlayerTechAction2))
-        m_player->special(2);
-      if (isActionTaken(InterfaceAction::PlayerTechAction3))
-        m_player->special(3);
-
-      if (isActionTakenEdge(InterfaceAction::PlayerInteract))
-        m_player->beginTrigger();
-      else if (!isActionTaken(InterfaceAction::PlayerInteract))
-        m_player->endTrigger();
-
-      if (isActionTakenEdge(InterfaceAction::PlayerDropItem))
-        m_player->dropItem();
-
-      if (isActionTakenEdge(InterfaceAction::EmoteBlabbering))
-        m_player->addEmote(HumanoidEmote::Blabbering);
-      if (isActionTakenEdge(InterfaceAction::EmoteShouting))
-        m_player->addEmote(HumanoidEmote::Shouting);
-      if (isActionTakenEdge(InterfaceAction::EmoteHappy))
-        m_player->addEmote(HumanoidEmote::Happy);
-      if (isActionTakenEdge(InterfaceAction::EmoteSad))
-        m_player->addEmote(HumanoidEmote::Sad);
-      if (isActionTakenEdge(InterfaceAction::EmoteNeutral))
-        m_player->addEmote(HumanoidEmote::NEUTRAL);
-      if (isActionTakenEdge(InterfaceAction::EmoteLaugh))
-        m_player->addEmote(HumanoidEmote::Laugh);
-      if (isActionTakenEdge(InterfaceAction::EmoteAnnoyed))
-        m_player->addEmote(HumanoidEmote::Annoyed);
-      if (isActionTakenEdge(InterfaceAction::EmoteOh))
-        m_player->addEmote(HumanoidEmote::Oh);
-      if (isActionTakenEdge(InterfaceAction::EmoteOooh))
-        m_player->addEmote(HumanoidEmote::OOOH);
-      if (isActionTakenEdge(InterfaceAction::EmoteBlink))
-        m_player->addEmote(HumanoidEmote::Blink);
-      if (isActionTakenEdge(InterfaceAction::EmoteWink))
-        m_player->addEmote(HumanoidEmote::Wink);
-      if (isActionTakenEdge(InterfaceAction::EmoteEat))
-        m_player->addEmote(HumanoidEmote::Eat);
-      if (isActionTakenEdge(InterfaceAction::EmoteSleep))
-        m_player->addEmote(HumanoidEmote::Sleep);
-
-      if (int newZoomDirection = (int)m_input->bindHeld("opensb", "zoomIn") - (int)m_input->bindHeld("opensb", "zoomOut"))
-        m_cameraZoomDirection = newZoomDirection;
-    }
-    if (m_cameraZoomDirection != 0) {
-      const float threshold = 0.01f;
-      bool goingIn = m_cameraZoomDirection == 1;
-      auto config = m_root->configuration();
-      float curZoom = config->get("zoomLevel").toFloat(),
-            newZoom = max(1.f, curZoom * powf(1.f + (float)m_cameraZoomDirection * 0.5f, min(1.f, dt * 5.f))),
-            intZoom = max(1.f, (goingIn ? floor(curZoom) : ceil(curZoom)) + m_cameraZoomDirection);
-      bool pastInt = goingIn ? newZoom + threshold > intZoom
-                             : newZoom - threshold < intZoom;
-      if (pastInt) {
-        float intNewZoom = goingIn ? ceil(newZoom) : floor(newZoom);
-        newZoom = lerp(clamp(abs(intZoom - newZoom) - 1.f, 0.f, 1.f), intZoom, intNewZoom);
-        m_cameraZoomDirection = 0;
+        m_universeServer->setPause(m_mainInterface->escapeDialogOpen());
       }
-      config->set("zoomLevel", min(1000000.f, newZoom));
-    }
 
-    if (m_controllerInput && m_controllerLeftStick.magnitudeSquared() > 0.01f)
-      m_player->setMoveVector(m_controllerLeftStick);
-    else
-      m_player->setMoveVector(Vec2F());
+      Vec2F aimPosition = m_player->aimPosition();
+      float fps = app->renderFps();
+      LogMap::set("client_render_rate", strf("{:4.2f} FPS ({:4.2f}ms)", fps, (1.0f / app->renderFps()) * 1000.0f));
+      LogMap::set("client_update_rate", strf("{:4.2f}Hz", app->updateRate()));
+      LogMap::set("player_pos", strf("[ ^#f45;{:4.2f}^reset;, ^#49f;{:4.2f}^reset; ]", m_player->position()[0], m_player->position()[1]));
+      LogMap::set("player_vel", strf("[ ^#f45;{:4.2f}^reset;, ^#49f;{:4.2f}^reset; ]", m_player->velocity()[0], m_player->velocity()[1]));
+      LogMap::set("player_aim", strf("[ ^#f45;{:4.2f}^reset;, ^#49f;{:4.2f}^reset; ]", aimPosition[0], aimPosition[1]));
+      if (auto world = m_universeClient->worldClient()) {
+        auto aim = Vec2I::floor(aimPosition);
+        LogMap::set("tile_liquid_level", toString(world->liquidLevel(aim).level));
+        LogMap::set("tile_dungeon_id", world->isTileProtected(aim) ? strf("^red;{}", world->dungeonId(aim)) : toString(world->dungeonId(aim)));
+      }
 
-    m_voice->setInput(m_input->bindHeld("opensb", "pushToTalk"));
-    DataStreamBuffer voiceData;
-    voiceData.setByteOrder(ByteOrder::LittleEndian);
-    //voiceData.writeBytes(VoiceBroadcastPrefix.utf8Bytes()); transmitting with SE compat for now
-    bool needstoSendVoice = m_voice->send(voiceData, 5000);
-
-    auto checkDisconnection = [this]() {
-      if (!m_universeClient->isConnected()) {
-        m_cinematicOverlay->stop();
-        String errMessage;
-        if (auto disconnectReason = m_universeClient->disconnectReason())
-          errMessage = strf("You were disconnected from the server for the following reason:\n{}", *disconnectReason);
-        else
-          errMessage = "Client-server connection no longer valid!";
-        setError(errMessage);
+      if (m_mainInterface->currentState() == MainInterface::ReturnToTitle)
         changeState(MainAppState::Title);
-        return true;
-      }
-
-      return false;
-    };
-
-    if (checkDisconnection())
-      return;
-
-    m_mainInterface->preUpdate(dt);
-    m_universeClient->update(dt);
-
-    if (checkDisconnection())
-      return;
-
-    if (worldClient) {
-      m_worldPainter->update(dt);
-      auto& broadcastCallback = worldClient->broadcastCallback();
-      if (!broadcastCallback) {
-        broadcastCallback = [&](PlayerPtr player, StringView broadcast) -> bool {
-          auto& view = broadcast.utf8();
-          if (view.rfind(VoiceBroadcastPrefix.utf8(), 0) != NPos) {
-            auto entityId = player->entityId();
-            auto speaker = m_voice->speaker(connectionForEntity(entityId));
-            speaker->entityId = entityId;
-            speaker->name = player->name();
-            speaker->position = player->mouthPosition();
-            m_voice->receive(speaker, view.substr(VoiceBroadcastPrefix.utf8Size()));
-          }
-          return true;
-        };
-      }
-
-      if (worldClient->inWorld()) {
-        if (needstoSendVoice) {
-          auto signature = Curve25519::sign(voiceData.ptr(), voiceData.size());
-          std::string_view signatureView((char*)signature.data(), signature.size());
-          std::string_view audioDataView(voiceData.ptr(), voiceData.size());
-          auto broadcast = strf("data\0voice\0{}{}"s, signatureView, audioDataView);
-          worldClient->sendSecretBroadcast(broadcast, true, false); // Already compressed by Opus.
-        }
-        if (auto mainPlayer = m_universeClient->mainPlayer()) {
-          auto localSpeaker = m_voice->localSpeaker();
-          localSpeaker->position = mainPlayer->position();
-          localSpeaker->entityId = mainPlayer->entityId();
-          localSpeaker->name = mainPlayer->name();
-        }
-        m_voice->setLocalSpeaker(worldClient->connection());
-      }
-      worldClient->setInteractiveHighlightMode(isActionTaken(InterfaceAction::ShowLabels));
     }
-    updateCamera(dt);
-
-    m_cinematicOverlay->update(dt);
-    m_mainInterface->update(dt);
-    m_mainMixer->update(dt, m_cinematicOverlay->muteSfx(), m_cinematicOverlay->muteMusic());
-    m_mainMixer->setSpeed(GlobalTimescale);
-
-    bool inputActive = m_mainInterface->textInputActive();
-    m_input->setTextInputActive(inputActive);
-    if (inputActive)
-      app->setTextArea(m_mainInterface->paneManager()->keyboardCapturedWidget()->keyboardCaptureArea());
-    else
-      app->setTextArea();
-    app->setAcceptingTextInput(inputActive);
-
-    for (auto const& interactAction : m_player->pullInteractActions())
-      m_mainInterface->handleInteractAction(interactAction);
-
-    if (m_universeServer) {
-      if (auto p2pNetworkingService = app->p2pNetworkingService()) {
-        for (auto& p2pClient : p2pNetworkingService->acceptP2PConnections())
-          m_universeServer->addClient(UniverseConnection(P2PPacketSocket::open(std::move(p2pClient))));
-      }
-
-      m_universeServer->setPause(m_mainInterface->escapeDialogOpen());
-    }
-
-    Vec2F aimPosition = m_player->aimPosition();
-    float fps = app->renderFps();
-    LogMap::set("client_render_rate", strf("{:4.2f} FPS ({:4.2f}ms)", fps, (1.0f / app->renderFps()) * 1000.0f));
-    LogMap::set("client_update_rate", strf("{:4.2f}Hz", app->updateRate()));
-    LogMap::set("player_pos", strf("[ ^#f45;{:4.2f}^reset;, ^#49f;{:4.2f}^reset; ]", m_player->position()[0], m_player->position()[1]));
-    LogMap::set("player_vel", strf("[ ^#f45;{:4.2f}^reset;, ^#49f;{:4.2f}^reset; ]", m_player->velocity()[0], m_player->velocity()[1]));
-    LogMap::set("player_aim", strf("[ ^#f45;{:4.2f}^reset;, ^#49f;{:4.2f}^reset; ]", aimPosition[0], aimPosition[1]));
-    if (auto world = m_universeClient->worldClient()) {
-      auto aim = Vec2I::floor(aimPosition);
-      LogMap::set("tile_liquid_level", toString(world->liquidLevel(aim).level));
-      LogMap::set("tile_dungeon_id", world->isTileProtected(aim) ? strf("^red;{}", world->dungeonId(aim)) : toString(world->dungeonId(aim)));
-    }
-
-    if (m_mainInterface->currentState() == MainInterface::ReturnToTitle)
-      changeState(MainAppState::Title);
 
   } catch (std::exception& e) {
     setError("Exception caught in client main-loop", e);
@@ -1234,7 +1239,7 @@ bool ClientApplication::isActionTakenEdge(InterfaceAction action) const {
   return false;
 }
 
-void ClientApplication::updateCamera(float dt) {
+void ClientApplication::updateCamera(float dt, bool fullUpdate, double scaleRate) {
   if (!m_universeClient->worldClient())
     return;
 
@@ -1247,16 +1252,20 @@ void ClientApplication::updateCamera(float dt) {
   auto assets = m_root->assets();
 
   const float triggerRadius = 100.0f;
-  const float deadzone = 0.1f;
+  const float deadzone = 0.001f;
   const float panFactor = 1.5f;
-  float cameraSpeedFactor = 30.0f / m_root->configuration()->get("cameraSpeedFactor").toFloat();
-  cameraSpeedFactor /= (dt * 60.f);
+  float cameraSpeedFactor = (30.0f) / m_root->configuration()->get("cameraSpeedFactor").toFloat();
+  cameraSpeedFactor /= (dt * (60.f * scaleRate));
+  // cameraSpeedFactor *= scaleRate;
+  Logger::info("A DT: {}, SR: {}, CSF: {}", dt, scaleRate, cameraSpeedFactor);
 
   auto playerCameraPosition = m_player->cameraPosition();
 
   if (isActionTaken(InterfaceAction::CameraShift)) {
+    // Logger::info("Cam Shift: Yes");
     m_snapBackCameraOffset = false;
-    m_cameraOffsetDownTime += dt;
+    if (fullUpdate)
+      m_cameraOffsetDownTime += dt;
     Vec2F aim = m_universeClient->worldClient()->geometry().diff(m_mainInterface->cursorWorldPosition(), playerCameraPosition);
 
     float magnitude = aim.magnitude() / (triggerRadius / camera.pixelRatio());
@@ -1272,6 +1281,7 @@ void ClientApplication::updateCamera(float dt) {
       m_cameraYOffset = (m_cameraYOffset * (cameraSpeedFactor - 1.0) + cameraYOffset) / cameraSpeedFactor;
     }
   } else {
+    // Logger::info("Cam Shift: No");
     if (m_cameraOffsetDownTime > 0.0f && m_cameraOffsetDownTime < 0.333333f)
       m_snapBackCameraOffset = true;
     if (m_snapBackCameraOffset) {

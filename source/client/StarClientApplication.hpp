@@ -36,7 +36,7 @@ protected:
 
   virtual void processInput(InputEvent const& event) override;
 
-  virtual void update() override;
+  virtual void update(bool, double) override;
   virtual void render() override;
 
   virtual void getAudioData(int16_t* stream, size_t len) override;
@@ -81,13 +81,13 @@ private:
   void updateModsWarning(float dt);
   void updateSplash(float dt);
   void updateError(float dt);
-  void updateTitle(float dt);
-  void updateRunning(float dt);
+  void updateTitle(float dt, bool fullUpdate);
+  void updateRunning(float dt, bool fullUpdate, double scaleRate);
 
   bool isActionTaken(InterfaceAction action) const;
   bool isActionTakenEdge(InterfaceAction action) const;
 
-  void updateCamera(float dt);
+  void updateCamera(float dt, bool fullUpdate, double scaleRate);
 
   RootUPtr m_root;
   ThreadFunction<void> m_rootLoader;
