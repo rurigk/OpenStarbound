@@ -1256,8 +1256,6 @@ void ClientApplication::updateCamera(float dt, bool fullUpdate, double scaleRate
   const float panFactor = 1.5f;
   float cameraSpeedFactor = (30.0f) / m_root->configuration()->get("cameraSpeedFactor").toFloat();
   cameraSpeedFactor /= (dt * (60.f * scaleRate));
-  // cameraSpeedFactor *= scaleRate;
-  Logger::info("A DT: {}, SR: {}, CSF: {}", dt, scaleRate, cameraSpeedFactor);
 
   auto playerCameraPosition = m_player->cameraPosition();
 
