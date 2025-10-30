@@ -530,8 +530,8 @@ public:
       bool quit = false;
       while (true) {
         bool fullUpdate = m_frameApproacher.startFrame();
+        
         cleanup();
-
 
         if (fullUpdate) {
           for (auto const& event : processEvents())
@@ -562,6 +562,7 @@ public:
         // }
 
         ImGui::NewFrame();
+        
         m_application->update(fullUpdate, m_frameApproacher.scaleRate());
 
         m_renderer->startFrame();
@@ -588,13 +589,10 @@ public:
           break;
         }
 
-        double remainingTime = m_frameApproacher.endFrame();
-        int64_t spareMilliseconds = round(remainingTime * 1000);
-        // Logger::info("Spare ms {}", spareMilliseconds);
-        // int64_t spareMilliseconds = round(m_updateTicker.spareTime() * 1000);
-        if (spareMilliseconds > 0)
+        Sint64 remainingTime = m_frameApproacher.endFrame();
+        if (remainingTime > 0)
         {
-          Thread::sleepPrecise(spareMilliseconds);
+          m_frameApproacher.sleep((Uint64)remainingTime);
         }
       }
     } catch (std::exception const& e) {
@@ -1099,7 +1097,7 @@ private:
 
   SignalHandler m_signalHandler;
 
-  FrameRateApproacher m_frameApproacher = FrameRateApproacher(165.0f, 60.0f);
+  FrameRateApproacher m_frameApproacher = FrameRateApproacher(165, 60);
 
   TickRateApproacher m_updateTicker = TickRateApproacher(60.0f, 1.0f);
   float m_updateRate = 0.0f;

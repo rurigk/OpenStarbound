@@ -1,34 +1,51 @@
 #pragma once
 
 #include "StarList.hpp"
+#include "SDL3/SDL.h"
 
 namespace Star {
     class FrameRateApproacher {
     public:
-        FrameRateApproacher(unsigned int targetFrameRate, unsigned int targetTickRate);
+        FrameRateApproacher(Uint64 targetFrameRate, Uint64 targetTickRate);
 
-        double targetFrameRate() const;
-        void setTargetFrameRate(unsigned int targetFrameRate);
+        Uint64 targetFrameRate() const;
+        void setTargetFrameRate(Uint64 targetFrameRate);
 
-        double targetTickRate() const;
-        void setTargetTickRate(unsigned int targetTickRate);
+        Uint64 targetTickRate() const;
+        void setTargetTickRate(Uint64 targetTickRate);
 
         bool startFrame();
-        double endFrame();
+        Sint64 endFrame();
 
         double renderRate();
         double scaleRate();
 
+        void sleep(Uint64 time);
+
     private:
-        double m_targetFrameRate;
-        double m_targetTickRate;
+        void measureSystemSleepDuration();
+        Uint64 sleepMs(Uint64 time);
+        void spinlock(Uint64 time);
+        // This are mostly informational
+        Uint64 m_targetFrameRate;
+        Uint64 m_targetTickRate;
 
-        double m_frameStartTime;
-        double m_frameEndTime;
-        double m_nextFrameTime;
+        // Timer resolution for each second
+        Uint64 m_timeResolution;
+        // Time that a frame should take
+        Uint64 m_frameDuration;
+        // Time that a tick should take
+        Uint64 m_tickDuration;
 
-        double m_lastTickTime;
-        double m_tickCount = 0;
+        // Timestamps for time measuring in frame rate
+        Uint64 m_frameEndTime;
+        Uint64 m_nextFrameTime;
+
+        // Timestamps for time measuring in tick rate
+        Uint64 m_lastTickTime;
+
+        // This is the time the system sleep function took to wake up
+        Uint64 m_systemSleepDuration;
 
         double avgFrameTime;
     };
